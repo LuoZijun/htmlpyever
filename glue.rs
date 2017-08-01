@@ -1,6 +1,5 @@
 extern crate libc;
 #[macro_use] extern crate html5ever;
-extern crate string_cache;
 
 
 use std::borrow::Cow;
@@ -16,9 +15,6 @@ use html5ever::tree_builder::{TreeBuilder, TreeBuilderOpts, TreeSink, QuirksMode
 use html5ever::interface::{Attribute, QualName, ExpandedName};
 use html5ever::LocalName;
 use html5ever::tendril::StrTendril;
-
-use string_cache::atom::Atom;
-
 
 /// When given as a function parameter, only valid for the duration of the call.
 #[repr(C)]
@@ -373,7 +369,9 @@ pub unsafe extern "C" fn new_parser(callbacks: &'static Callbacks,
             Some(QualName {
                 prefix: None,
                 ns: ns!(html),
-                local: Atom::from(CStr::from_ptr(frag_ctx_name).to_str().unwrap()),
+                // local: Atom::from(CStr::from_ptr(frag_ctx_name).to_str().unwrap()),
+                // local: local_name!("src")
+                local: LocalName::from(CStr::from_ptr(frag_ctx_name).to_str().unwrap()),
             })
         };
         let mut sink = CallbackTreeSink {
