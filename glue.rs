@@ -1,21 +1,24 @@
 extern crate libc;
-extern crate html5ever;
-#[macro_use] extern crate html5ever_atoms;
+#[macro_use] extern crate html5ever;
 extern crate string_cache;
-extern crate tendril;
 
-use html5ever::tokenizer::{Tokenizer, TokenizerOpts, Attribute, TokenizerResult};
-use html5ever::tokenizer::buffer_queue::BufferQueue;
-use html5ever::tree_builder::{TreeBuilder, TreeBuilderOpts, TreeSink, QuirksMode, NodeOrText};
-use html5ever::QualName;
+
 use std::borrow::Cow;
 use std::slice;
 use std::mem;
 use std::ffi::CStr;
 use libc::{c_void, c_int, c_char, size_t};
 use std::panic::{catch_unwind, UnwindSafe};
-use tendril::StrTendril;
+
+use html5ever::tokenizer::{Tokenizer, TokenizerOpts, TokenizerResult};
+use html5ever::tokenizer::BufferQueue;
+use html5ever::tree_builder::{TreeBuilder, TreeBuilderOpts, TreeSink, QuirksMode, NodeOrText, ElementFlags};
+use html5ever::interface::{Attribute, QualName, ExpandedName};
+use html5ever::LocalName;
+use html5ever::tendril::StrTendril;
+
 use string_cache::atom::Atom;
+
 
 /// When given as a function parameter, only valid for the duration of the call.
 #[repr(C)]
@@ -150,7 +153,7 @@ impl TreeSink for CallbackTreeSink {
         self.document.clone()
     }
 
-    fn get_template_contents(&mut self, target: NodeHandle) -> NodeHandle {
+    fn get_template_contents(&mut self, target: &NodeHandle) -> NodeHandle {
         self.new_handle(check_pointer(call!(self, get_template_contents(target.ptr))))
     }
 
@@ -158,17 +161,25 @@ impl TreeSink for CallbackTreeSink {
         self.quirks_mode = mode
     }
 
-    fn same_node(&self, x: NodeHandle, y: NodeHandle) -> bool {
+    fn same_node(&self, x: &NodeHandle, y: &NodeHandle) -> bool {
         check_int(call_if_some!(self, same_node(x.ptr, y.ptr) else (x.ptr == y.ptr) as c_int)) != 0
     }
 
-    fn elem_name(&self, target: NodeHandle) -> QualName {
-        target.qualified_name.as_ref().unwrap().clone()
+    fn elem_name(&self, target: &NodeHandle) -> ExpandedName {
+        // target.qualified_name.as_ref().unwrap().clone()
+        match target.qualified_name {
+            Some(qualified_name) => qualified_name.expanded(),
+            None => panic!("not an element!")
+        }
     }
 
-    fn create_element(&mut self, name: QualName, attrs: Vec<Attribute>) -> NodeHandle {
+    fn create_element(&mut self, name: QualName, attrs: Vec<Attribute>, flags: ElementFlags) -> NodeHandle {
+        // ElementFlags:
+        //      https://docs.rs/markup5ever/0.3.0/src/markup5ever/interface/tree_builder.rs.html#127
+        //      https://docs.rs/markup5ever/0.3.0/src/markup5ever/rcdom.rs.html#189
         let element = check_pointer(call!(self, create_element(
-                    CUnicode::from_str(&name.ns), CUnicode::from_str(&name.local))));
+                    CUnicode::from_str(&name.ns), CUnicode::from_str(&name.local))
+        ));
         self.add_attributes_if_missing(element, attrs);
         let mut handle = self.new_handle(element);
         handle.qualified_name = Some(name);
@@ -179,8 +190,17 @@ impl TreeSink for CallbackTreeSink {
         self.new_handle(check_pointer(call!(
             self, create_comment(CUnicode::from_str(&text)))))
     }
-
-    fn append(&mut self, parent: NodeHandle, child: NodeOrText<NodeHandle>) {
+    fn create_pi(&mut self, target: StrTendril, data: StrTendril) -> NodeHandle {
+        // TODO:
+        //     https://docs.rs/markup5ever/0.3.0/src/markup5ever/interface/tree_builder.rs.html#134
+        //     https://docs.rs/markup5ever/0.3.0/src/markup5ever/rcdom.rs.html#206
+        unimplemented!();
+    }
+    fn has_parent_node(&self, node: &NodeHandle) -> bool {
+        // TODO:
+        unimplemented!();
+    }
+    fn append(&mut self, parent: &NodeHandle, child: NodeOrText<NodeHandle>) {
         check_int(match child {
             NodeOrText::AppendNode(node) => {
                 call!(self, append_node(parent.ptr, node.ptr))
@@ -191,8 +211,7 @@ impl TreeSink for CallbackTreeSink {
         });
     }
 
-    fn append_before_sibling(&mut self, sibling: NodeHandle, child: NodeOrText<NodeHandle>)
-                             -> Result<(), NodeOrText<NodeHandle>> {
+    fn append_before_sibling(&mut self, sibling: &NodeHandle, child: NodeOrText<NodeHandle>) {
         let result = check_int(match child {
             NodeOrText::AppendNode(ref node) => {
                 call!(self, insert_node_before_sibling(sibling.ptr, node.ptr))
@@ -201,11 +220,11 @@ impl TreeSink for CallbackTreeSink {
                 call!(self, insert_text_before_sibling(sibling.ptr, CUnicode::from_str(text)))
             }
         });
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(child)
-        }
+        // if result == 0 {
+        //     Ok(())
+        // } else {
+        //     Err(child)
+        // }
     }
 
     fn append_doctype_to_document(&mut self,
@@ -213,24 +232,25 @@ impl TreeSink for CallbackTreeSink {
                                   public_id: StrTendril,
                                   system_id: StrTendril) {
         check_int(call!(self, append_doctype_to_document(
-            CUnicode::from_str(&name),
-            CUnicode::from_str(&public_id),
-            CUnicode::from_str(&system_id))));
+                CUnicode::from_str(&name),
+                CUnicode::from_str(&public_id),
+                CUnicode::from_str(&system_id)) ));
+
     }
 
-    fn add_attrs_if_missing(&mut self, target: NodeHandle, attrs: Vec<Attribute>) {
+    fn add_attrs_if_missing(&mut self, target: &NodeHandle, attrs: Vec<Attribute>) {
         self.add_attributes_if_missing(target.ptr, attrs)
     }
 
-    fn remove_from_parent(&mut self, target: NodeHandle) {
+    fn remove_from_parent(&mut self, target: &NodeHandle) {
         check_int(call!(self, remove_from_parent(target.ptr)));
     }
 
-    fn reparent_children(&mut self, node: NodeHandle, new_parent: NodeHandle) {
+    fn reparent_children(&mut self, node: &NodeHandle, new_parent: &NodeHandle) {
         check_int(call!(self, reparent_children(node.ptr, new_parent.ptr)));
     }
 
-    fn mark_script_already_started(&mut self, _target: NodeHandle) {}
+    fn mark_script_already_started(&mut self, _target: &NodeHandle) {}
 }
 
 macro_rules! declare_with_callbacks {
@@ -351,6 +371,7 @@ pub unsafe extern "C" fn new_parser(callbacks: &'static Callbacks,
             None
         } else {
             Some(QualName {
+                prefix: None,
                 ns: ns!(html),
                 local: Atom::from(CStr::from_ptr(frag_ctx_name).to_str().unwrap()),
             })
@@ -373,7 +394,8 @@ pub unsafe extern "C" fn new_parser(callbacks: &'static Callbacks,
         let (tree_builder, initial_state) = match context_qualname {
             None => (TreeBuilder::new(sink, tree_builder_options), None),
             Some(qualname) => {
-                let element = sink.create_element(qualname, Vec::new());
+                let flags = ElementFlags::default();
+                let element = sink.create_element(qualname, Vec::new(), flags);
                 let tree_builder = TreeBuilder::new_for_fragment(sink, element, None, tree_builder_options);
                 let state = tree_builder.tokenizer_state_for_context_elem();
                 (tree_builder, Some(state))
@@ -400,7 +422,7 @@ pub unsafe extern "C" fn feed_parser(parser: &mut Parser, chunk: CBytes) -> c_in
         let mut buffers = BufferQueue::new();
         buffers.push_back((&*string).into());
         while let TokenizerResult::Script(node) = parser.tokenizer.feed(&mut buffers) {
-            let sink = parser.tokenizer.sink().sink();
+            let sink = parser.tokenizer.sink;
             check_int(call_if_some!(sink, run_script(node.ptr)));
         }
     })
